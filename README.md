@@ -1,5 +1,3 @@
-# OBDC-Comparison
-
 This repository contains the simulation code used to conduct the analyses
 for the following manuscript on Bayesian designs for identifying the
 **optimal biological dose combination (OBDC)** — the dose pair achieving
@@ -20,15 +18,33 @@ initiative. If you use this repository, please cite:
 It provides working R implementations of four representative designs spanning
 the three principal statistical paradigms for OBDC estimation: a model-based
 design (**EffTox**), a model-assisted design (**Comb-BOIN12**), and two
-utility-integrated designs (**COMIC** and **uTPI-Comb**). Each design is
-built from a common set of configurable parameters and can be run either as a
-command-line report or through an interactive Shiny application, allowing
-users to explore scenario assumptions and compare operating characteristics
-across designs without needing to read the underlying statistical code.
+utility-integrated designs (**COMIC** and **uTPI-Comb**). `efftox.R` also
+includes **EffTox-TITE**, a variant of EffTox with continuous (rolling)
+accrual and a time-to-event weighted likelihood in place of EffTox's usual
+fixed-cohort, fully-observed-outcome conduct — see "EffTox vs. EffTox-TITE"
+below for how each tool exposes it. Each design is built from a common set
+of configurable parameters and can be run either as a command-line report or
+through an interactive Shiny application, allowing users to explore scenario
+assumptions and compare operating characteristics across designs without
+needing to read the underlying statistical code.
 
-This reporsitory contains Six self-contained .R files (the scenarios, the four design
-engines, one "just-run-it" script and an R Shiny app makes up the bundle.
+This repository contains six self-contained .R files (the scenarios, the
+four design engines, and one "just-run-it" script) plus an R Shiny app.
 
+## EffTox vs. EffTox-TITE
+
+The command-line script and the Shiny app currently expose EffTox-TITE
+**differently** — worth knowing before you run either one:
+
+- **`execution.R`** always runs **five** designs: Comb-BOIN12, EffTox,
+  EffTox-TITE, COMIC, and uTPI-Comb, every time.
+- **The Shiny app** always runs **four** designs, with an **`isTITE`**
+  toggle (Arguments tab, default `FALSE`) that swaps EffTox for EffTox-TITE
+  in that one slot — never both at once.
+
+Both draw on the same underlying `efftox_config(..., isTITE = TRUE/FALSE)`
+argument in `efftox.R`; the two tools just default to different ways of
+using it.
 
 ## Try the interactive app online
 
@@ -40,10 +56,10 @@ https://22c7ba-damitri-kundu.shinyapps.io/OBDC-Compare-App/
 |------|------------|
 | `scenarios.R` | Scenarios 1, 3, 5, 9, 10 from Table 1 of the uTPI-Comb paper (Liang, Yang & Yuan, 2024), plus `make_custom_scenario()` for building your own J x K grid. |
 | `comb_boin12.R` | Comb-BOIN12 (model-assisted). Lu, Zhang, Yuan & Lin (2025). |
-| `efftox.R` | EffTox (fully model-based). Thall & Cook (2004); Brock et al. (2017). |
+| `efftox.R` | EffTox (fully model-based). Thall & Cook (2004); Brock et al. (2017). Also contains **EffTox-TITE**, the same model with continuous accrual and a time-to-event weighted likelihood (`isTITE = TRUE`) — noticeably slower to run than standard EffTox, since it re-fits its MCMC once per patient rather than once per cohort. |
 | `comic.R` | COMIC (utility-integrated, multi-indication). Chen, Takeda & Yuan (2025). |
 | `utpi_comb.R` | uTPI-Comb (utility-integrated, zone-based). Liang, Yang & Yuan (2024). |
-| `execution.R` | **Run this for a plain-text report.** Edit the settings block at the top, then `Rscript execution.R`. |
+| `execution.R` | **Run this for a plain-text report.** Edit the settings block at the top, then `Rscript execution.R`. Runs all five designs (see "EffTox vs. EffTox-TITE" above). |
 
 ## Quick start
 
