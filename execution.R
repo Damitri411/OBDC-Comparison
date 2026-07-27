@@ -1,10 +1,25 @@
 ## =============================================================================
 ## execution.R  --  RUN THIS FILE:   Rscript execution.R
 ## =============================================================================
-## A single, self-contained script that runs and compares four OBDC designs
-## (Comb-BOIN12, EffTox, COMIC, uTPI-Comb) from one common parameter set,
-## across one or more dose-combination scenarios, and prints a report for
-## every scenario x design combination.
+## A single, self-contained script that runs and compares five OBDC designs
+## (Comb-BOIN12, EffTox, EffTox-TITE, COMIC, uTPI-Comb) from one common
+## parameter set, across one or more dose-combination scenarios, and prints a
+## report for every scenario x design combination.
+##
+## EffTox-TITE is the same EffTox model with continuous (rolling) accrual and
+## a time-to-event weighted likelihood (isTITE = TRUE in efftox_config()),
+## instead of EffTox's usual fixed-cohort, fully-observed-outcome conduct.
+##
+## For every scenario, the report also prints the TRUE admissible set and
+## TRUE OBDC(s) from ground truth -- if multiple cells tie exactly on utility
+## among admissible cells, ALL of them are reported, never silently reduced
+## to one "winner". The same no-tie-break rule applies inside each design's
+## own simulated trial (see efftox.R etc.: a trial's final recommended_OBDC
+## is now a full tied set, not one cell) -- the Operating Characteristics
+## report below aggregates many such trials, so it additionally shows a
+## "modal cell across replicates" as a display summary (which IS tie-broken,
+## purely to have one cell to highlight) alongside how often an individual
+## trial's own final selection was itself untied vs. tied.
 ##
 ## Built around Table 2 of Mukherjee, Takeda & Wason (manuscript) and the toy
 ## scenarios from Table 1 of the uTPI-Comb paper (Liang, Yang & Yuan, 2024,
@@ -20,7 +35,8 @@
 ##      ).
 ##
 ## It sources four sibling files that must sit in the same folder:
-##   comb_boin12.R, efftox.R, comic.R, utpi_comb.R   (the four design engines)
+##   comb_boin12.R, efftox.R, comic.R, utpi_comb.R   (the four design engines --
+##     efftox.R contains BOTH the usual EffTox and the EffTox-TITE variant)
 ##   scenarios.R                                      (the five fixed scenarios)
 ## =============================================================================
 
@@ -131,6 +147,19 @@ build_cfg_efftox <- function(mc, fast = TRUE) {
     alphaT = 0.70, alphaE = 0.70, n_iter = if (fast) 1200 else 4000, n_burnin = if (fast) 400 else 1500
   )
 }
+build_cfg_efftox_tite <- function(mc, fast = TRUE) {
+  ## Same EffTox model as build_cfg_efftox(), but with isTITE = TRUE: continuous
+  ## (Poisson) accrual and a time-to-event weighted likelihood instead of fixed
+  ## cohorts of fully-observed outcomes. Tmax/accrual_rate are illustrative
+  ## defaults (a 42-unit assessment window, 2 patients per unit time to match
+  ## uTPI-Comb's accrual_rate elsewhere in this file) -- edit as needed for a
+  ## real trial's actual assessment window and expected accrual speed.
+  env_et$efftox_config(
+    dose1 = seq_len(mc$J), dose2 = seq_len(mc$K), thetaE = mc$deltaE, thetaT = mc$deltaT,
+    alphaT = 0.70, alphaE = 0.70, n_iter = if (fast) 1200 else 4000, n_burnin = if (fast) 400 else 1500,
+    isTITE = TRUE, Tmax = 42, accrual_rate = 2
+  )
+}
 build_cfg_comic <- function(mc) {
   psi_bar_m <- 100 * max(0, mc$wE * mc$deltaE - mc$wT * mc$deltaT)
   env_comic$comic_config(
@@ -152,33 +181,138 @@ table2_admissible_efftox      <- function(post, mc) (post$PrE_ok >= mc$piE) & (p
 table2_admissible_comic       <- function(post, mc) (1 - post$PrUtil_low >= mc$piE) & (1 - post$PrTox1_high >= mc$piT)
 table2_admissible_utpi_comb   <- function(post, mc) (post$PrE_ok >= mc$piE) & (1 - post$PrT_over >= mc$piT)
 
+## Multiple cells CAN legitimately tie. Two different situations use two
+## different policies:
+##  - The "modal cell across Nsim replicates" below is a SELECTION-FREQUENCY
+##    tie (how often a cell was part of the recommended set across many
+##    simulated trials) -- a summary display statistic, not a trial decision,
+##    but it still needs to resolve to one highlighted cell for the printed
+##    report, so it uses select_best_with_tiebreak() (lowest total dose j+k)
+##    and reports how many cells were tied.
+##  - The TRUE OBDC (ground truth) and each design's own FINAL recommended
+##    OBDC (computed inside the design engines) are REPORTED CONCLUSIONS, not
+##    operational necessities -- so neither is tie-broken. Every admissible
+##    cell achieving the max utility is reported, via select_all_tied()
+##    (defined in every engine file too) or its use below.
+select_best_with_tiebreak <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  n_tied <- length(tied)
+  if (n_tied > 1) {
+    dose_sum <- idx[tied, 1] + idx[tied, 2]
+    tied <- tied[which.min(dose_sum)]
+  }
+  list(sel = as.numeric(idx[tied, ]), n_tied = n_tied)
+}
+
+## Returns EVERY row of `idx` achieving max(values), as a 2-column matrix
+## with columns named "j","k" -- no tie-break applied.
+select_all_tied <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  out <- matrix(idx[tied, ], ncol = 2)
+  colnames(out) <- c("j", "k")
+  out
+}
+
+## =============================================================================
+## TRUE admissible set and TRUE OBDC(s) -- computed directly from a scenario's
+## ground-truth surfaces (no posterior/simulation involved). Reports EVERY
+## admissible cell tied for the highest true utility U = wE*true_pE -
+## wT*true_pT; no tie-break, since this is a factual property of the
+## scenario itself, not an operational trial decision.
+## =============================================================================
+
+true_admissible_and_obdc <- function(mc, true_pE, true_pT) {
+  A_true <- (true_pE >= mc$deltaE) & (true_pT <= mc$deltaT)
+  U_true <- mc$wE * true_pE - mc$wT * true_pT
+  if (!any(A_true)) {
+    return(list(A_true = A_true, U_true = U_true,
+                obdc = matrix(NA_real_, 0, 2, dimnames = list(NULL, c("j", "k")))))
+  }
+  idx <- which(A_true, arr.ind = TRUE)
+  u_at_idx <- U_true[A_true]
+  obdc <- select_all_tied(idx, u_at_idx)
+  list(A_true = A_true, U_true = U_true, obdc = obdc)
+}
+
+## Prints the true admissible set and ALL true-OBDC candidates for one
+## scenario (ground truth -- independent of any design).
+report_true_obdc <- function(scenario_label, scenario, mc) {
+  ta <- true_admissible_and_obdc(mc, scenario$true_pE, scenario$true_pT)
+  cat("\n--- Ground truth for", scenario_label, "---\n")
+  A_cells <- which(ta$A_true, arr.ind = TRUE)
+  if (nrow(A_cells) == 0) {
+    cat("True admissible set A = {}  (empty) -- no cell satisfies true_pE >= deltaE and true_pT <= deltaT.\n\n")
+    return(invisible(NULL))
+  }
+  cells_str <- paste0("(", A_cells[, "row"], ",", A_cells[, "col"], ")", collapse = ", ")
+  cat("True admissible set A = {", cells_str, "}\n")
+  if (nrow(ta$obdc) == 1) {
+    j <- ta$obdc[1, "j"]; k <- ta$obdc[1, "k"]
+    cat(sprintf("True OBDC = (j=%d, k=%d)   true_pE=%.3f  true_pT=%.3f  U=%.3f\n",
+                j, k, scenario$true_pE[j, k], scenario$true_pT[j, k], ta$U_true[j, k]))
+  } else {
+    cat("True OBDC:", nrow(ta$obdc), "cells tied on true utility U (ALL reported, no tie-break):\n")
+    for (r in seq_len(nrow(ta$obdc))) {
+      j <- ta$obdc[r, "j"]; k <- ta$obdc[r, "k"]
+      cat(sprintf("  candidate %d/%d: (j=%d, k=%d)   true_pE=%.3f  true_pT=%.3f  U=%.3f\n",
+                  r, nrow(ta$obdc), j, k, scenario$true_pE[j, k], scenario$true_pT[j, k], ta$U_true[j, k]))
+    }
+  }
+  cat("\n")
+}
+
+## `reps` is a list where each element's `$sel` is now a MATRIX (>=1 rows) of
+## every cell tied for that replicate's own final recommendation -- since the
+## design engines no longer tie-break their final OBDC. Every tied cell
+## contributes to the heatmap and to the Ehat/That/Uhat/etc. summary stats
+## below (so a replicate with 2 tied cells contributes 2 "cell instances",
+## not 1) -- this is the most transparent way to aggregate when the
+## underlying unit (a single trial's answer) can itself be a set.
 summarise_oc <- function(reps, J, K, true_pE, true_pT, deltaE, deltaT) {
   Nsim <- length(reps); heat <- matrix(0, J, K); no_selection <- 0
   Ehat_sel <- That_sel <- Uhat_sel <- Etrue_sel <- Ttrue_sel <- A_sizes <- numeric(0)
   member_flags <- logical(0); n_unsafe <- 0; n_ineffective <- 0
+  replicate_tie_flags <- logical(0)
+  n_cell_instances <- 0
+  
   for (r in reps) {
     A_sizes <- c(A_sizes, r$A_size)
-    if (any(is.na(r$sel))) { no_selection <- no_selection + 1; next }
-    j <- r$sel[1]; k <- r$sel[2]
-    heat[j, k] <- heat[j, k] + 1
+    sel <- r$sel
+    if (is.null(sel) || nrow(sel) == 0 || anyNA(sel)) { no_selection <- no_selection + 1; next }
+    n_tied_this_rep <- nrow(sel)
+    replicate_tie_flags <- c(replicate_tie_flags, n_tied_this_rep > 1)
+    n_cell_instances <- n_cell_instances + n_tied_this_rep
+    for (rr in seq_len(n_tied_this_rep)) heat[sel[rr, 1], sel[rr, 2]] <- heat[sel[rr, 1], sel[rr, 2]] + 1
     Ehat_sel <- c(Ehat_sel, r$Ehat); That_sel <- c(That_sel, r$That); Uhat_sel <- c(Uhat_sel, r$Uhat)
-    Etrue_sel <- c(Etrue_sel, true_pE[j, k]); Ttrue_sel <- c(Ttrue_sel, true_pT[j, k])
-    member_flags <- c(member_flags, isTRUE(r$table2_member))
-    if (true_pT[j, k] > deltaT) n_unsafe <- n_unsafe + 1
-    if (true_pE[j, k] < deltaE) n_ineffective <- n_ineffective + 1
+    Etrue_sel <- c(Etrue_sel, true_pE[sel]); Ttrue_sel <- c(Ttrue_sel, true_pT[sel])
+    member_flags <- c(member_flags, r$table2_member)
+    n_unsafe <- n_unsafe + sum(true_pT[sel] > deltaT)
+    n_ineffective <- n_ineffective + sum(true_pE[sel] < deltaE)
   }
   heat_prop <- heat / Nsim
   n_selected <- Nsim - no_selection
-  modal_cell <- if (n_selected > 0) which(heat == max(heat), arr.ind = TRUE)[1, ] else c(NA, NA)
+  n_tied_modal <- 0
+  if (n_selected > 0 && max(heat) > 0) {
+    idx <- which(heat == max(heat), arr.ind = TRUE)
+    pick <- select_best_with_tiebreak(idx, rep(1, nrow(idx)))   # all tied cells already share max(heat)
+    modal_cell <- pick$sel
+    n_tied_modal <- nrow(idx)
+  } else {
+    modal_cell <- c(NA, NA)
+  }
   list(heatmap = heat_prop, prop_no_selection = no_selection / Nsim, modal_cell = modal_cell,
-       Ehat_at_modal = if (n_selected > 0) mean(Ehat_sel) else NA,
-       That_at_modal = if (n_selected > 0) mean(That_sel) else NA,
-       Uhat_at_modal = if (n_selected > 0) mean(Uhat_sel) else NA,
-       prop_modal_table2_member = if (n_selected > 0) mean(member_flags) else NA,
-       Pr_select_unsafe = if (n_selected > 0) n_unsafe / n_selected else NA,
-       Pr_select_ineffective = if (n_selected > 0) n_ineffective / n_selected else NA,
-       mean_true_E_at_selection = if (n_selected > 0) mean(Etrue_sel) else NA,
-       mean_true_T_at_selection = if (n_selected > 0) mean(Ttrue_sel) else NA,
+       n_tied_modal = n_tied_modal,
+       prop_replicates_with_tie = if (n_selected > 0) mean(replicate_tie_flags) else NA,
+       Ehat_at_modal = if (n_cell_instances > 0) mean(Ehat_sel) else NA,
+       That_at_modal = if (n_cell_instances > 0) mean(That_sel) else NA,
+       Uhat_at_modal = if (n_cell_instances > 0) mean(Uhat_sel) else NA,
+       prop_modal_table2_member = if (n_cell_instances > 0) mean(member_flags) else NA,
+       Pr_select_unsafe = if (n_cell_instances > 0) n_unsafe / n_cell_instances else NA,
+       Pr_select_ineffective = if (n_cell_instances > 0) n_ineffective / n_cell_instances else NA,
+       mean_true_E_at_selection = if (n_cell_instances > 0) mean(Etrue_sel) else NA,
+       mean_true_T_at_selection = if (n_cell_instances > 0) mean(Ttrue_sel) else NA,
        mean_A_size = if (length(A_sizes) > 0) mean(A_sizes) else NA)
 }
 
@@ -187,10 +321,10 @@ run_oc_comb_boin12 <- function(mc, true_pE, true_pT, seeds) {
   reps <- lapply(seeds, function(s) {
     res <- env_boin$simulate_comb_boin12(cfg, true_pE, true_pT, seed = s)
     A_t2 <- table2_admissible_comb_boin12(res$posterior, mc)
-    if (any(is.na(res$recommended_OBDC))) return(list(sel = c(NA, NA), A_size = sum(A_t2)))
-    sel <- as.numeric(res$recommended_OBDC)
-    list(sel = sel, Ehat = res$posterior$pE_hat[sel[1], sel[2]], That = res$posterior$pT_hat[sel[1], sel[2]],
-         Uhat = res$posterior$U_hat[sel[1], sel[2]], table2_member = A_t2[sel[1], sel[2]], A_size = sum(A_t2))
+    sel <- res$recommended_OBDC   # matrix: every cell tied for this trial's own final recommendation
+    if (anyNA(sel)) return(list(sel = sel, A_size = sum(A_t2)))
+    list(sel = sel, Ehat = res$posterior$pE_hat[sel], That = res$posterior$pT_hat[sel],
+         Uhat = res$posterior$U_hat[sel], table2_member = A_t2[sel], A_size = sum(A_t2))
   })
   summarise_oc(reps, mc$J, mc$K, true_pE, true_pT, mc$deltaE, mc$deltaT)
 }
@@ -199,10 +333,28 @@ run_oc_efftox <- function(mc, true_pE, true_pT, seeds, fast = TRUE) {
   reps <- lapply(seeds, function(s) {
     res <- env_et$simulate_efftox(cfg, true_pE, true_pT, cohort_size = 3, n_max = mc$n * mc$J * mc$K, seed = s)
     A_t2 <- table2_admissible_efftox(res$posterior, mc)
-    if (any(is.na(res$recommended_OBDC))) return(list(sel = c(NA, NA), A_size = sum(A_t2)))
-    sel <- as.numeric(res$recommended_OBDC)
-    list(sel = sel, Ehat = res$posterior$pE_hat[sel[1], sel[2]], That = res$posterior$pT_hat[sel[1], sel[2]],
-         Uhat = res$posterior$Dbar[sel[1], sel[2]], table2_member = A_t2[sel[1], sel[2]], A_size = sum(A_t2))
+    sel <- res$recommended_OBDC
+    if (anyNA(sel)) return(list(sel = sel, A_size = sum(A_t2)))
+    list(sel = sel, Ehat = res$posterior$pE_hat[sel], That = res$posterior$pT_hat[sel],
+         Uhat = res$posterior$Dbar[sel], table2_member = A_t2[sel], A_size = sum(A_t2))
+  })
+  summarise_oc(reps, mc$J, mc$K, true_pE, true_pT, mc$deltaE, mc$deltaT)
+}
+run_oc_efftox_tite <- function(mc, true_pE, true_pT, seeds, fast = TRUE) {
+  ## Same as run_oc_efftox(), but with the isTITE = TRUE config: continuous
+  ## accrual and TITE-weighted interim decisions. simulate_efftox() dispatches
+  ## to the TITE path internally based on cfg$isTITE, so this is otherwise
+  ## identical -- same posterior fields (PrE_ok/PrT_ok/Dbar/etc.), so it can
+  ## reuse table2_admissible_efftox() unchanged. cohort_size is accepted but
+  ## ignored on the TITE path (accrual is one patient at a time, continuously).
+  cfg <- build_cfg_efftox_tite(mc, fast = fast)
+  reps <- lapply(seeds, function(s) {
+    res <- env_et$simulate_efftox(cfg, true_pE, true_pT, n_max = mc$n * mc$J * mc$K, seed = s)
+    A_t2 <- table2_admissible_efftox(res$posterior, mc)
+    sel <- res$recommended_OBDC
+    if (anyNA(sel)) return(list(sel = sel, A_size = sum(A_t2)))
+    list(sel = sel, Ehat = res$posterior$pE_hat[sel], That = res$posterior$pT_hat[sel],
+         Uhat = res$posterior$Dbar[sel], table2_member = A_t2[sel], A_size = sum(A_t2))
   })
   summarise_oc(reps, mc$J, mc$K, true_pE, true_pT, mc$deltaE, mc$deltaT)
 }
@@ -222,11 +374,11 @@ run_oc_comic <- function(mc, true_pE, true_pT, seeds) {
     res <- env_comic$comic_run_indication(cfg, arr, true_pT, true_pT, true_pd_sat,
                                           n_max = cfg$n_max_stage1, start_dose = cfg$start_dose, seed = s)
     A_t2 <- table2_admissible_comic(res$posterior, mc)
-    if (any(is.na(res$recommended_OBDC))) return(list(sel = c(NA, NA), A_size = sum(A_t2)))
-    sel <- as.numeric(res$recommended_OBDC)
-    mu <- res$posterior$mu_hat[sel[1], sel[2]] / 100
-    list(sel = sel, Ehat = true_pE[sel[1], sel[2]], That = true_pT[sel[1], sel[2]],
-         Uhat = mu, table2_member = A_t2[sel[1], sel[2]], A_size = sum(A_t2))
+    sel <- res$recommended_OBDC
+    if (anyNA(sel)) return(list(sel = sel, A_size = sum(A_t2)))
+    mu <- res$posterior$mu_hat[sel] / 100
+    list(sel = sel, Ehat = true_pE[sel], That = true_pT[sel],
+         Uhat = mu, table2_member = A_t2[sel], A_size = sum(A_t2))
   })
   summarise_oc(reps, mc$J, mc$K, true_pE, true_pT, mc$deltaE, mc$deltaT)
 }
@@ -235,10 +387,10 @@ run_oc_utpi_comb <- function(mc, true_pE, true_pT, seeds) {
   reps <- lapply(seeds, function(s) {
     res <- env_utpi$simulate_utpi_comb(cfg, true_pE, true_pT, seed = s)
     A_t2 <- table2_admissible_utpi_comb(res$posterior, mc)
-    if (any(is.na(res$recommended_OBDC))) return(list(sel = c(NA, NA), A_size = sum(A_t2)))
-    sel <- as.numeric(res$recommended_OBDC)
-    list(sel = sel, Ehat = res$posterior$pE_hat[sel[1], sel[2]], That = res$posterior$pT_hat[sel[1], sel[2]],
-         Uhat = res$posterior$U_hat[sel[1], sel[2]], table2_member = A_t2[sel[1], sel[2]], A_size = sum(A_t2))
+    sel <- res$recommended_OBDC
+    if (anyNA(sel)) return(list(sel = sel, A_size = sum(A_t2)))
+    list(sel = sel, Ehat = res$posterior$pE_hat[sel], That = res$posterior$pT_hat[sel],
+         Uhat = res$posterior$U_hat[sel], table2_member = A_t2[sel], A_size = sum(A_t2))
   })
   summarise_oc(reps, mc$J, mc$K, true_pE, true_pT, mc$deltaE, mc$deltaT)
 }
@@ -246,6 +398,7 @@ run_oc_utpi_comb <- function(mc, true_pE, true_pT, seeds) {
 RUNNERS <- list(
   "Comb-BOIN12" = function(mc, tE, tT, seeds) run_oc_comb_boin12(mc, tE, tT, seeds),
   "EffTox"      = function(mc, tE, tT, seeds) run_oc_efftox(mc, tE, tT, seeds, fast = TRUE),
+  "EffTox-TITE" = function(mc, tE, tT, seeds) run_oc_efftox_tite(mc, tE, tT, seeds, fast = TRUE),
   "COMIC"       = function(mc, tE, tT, seeds) run_oc_comic(mc, tE, tT, seeds),
   "uTPI-Comb"   = function(mc, tE, tT, seeds) run_oc_utpi_comb(mc, tE, tT, seeds)
 )
@@ -272,11 +425,14 @@ report_design <- function(design_name, scenario_name, scenario, mc, oc, note) {
   
   if (all(!is.na(oc$modal_cell))) {
     j <- oc$modal_cell[1]; k <- oc$modal_cell[2]
-    cat("Recommended (j, k) [modal across replicates] = (", j, ",", k, ")\n")
+    cat("Modal cell across replicates [most frequently part of the recommended set] = (", j, ",", k, ")\n")
+    if (oc$n_tied_modal > 1) {
+      cat("  (", oc$n_tied_modal, "cells tied on selection frequency; lowest-dose tie-break applied for this display cell)\n")
+    }
     cat("  Ehat =", round(oc$Ehat_at_modal, 3), " That =", round(oc$That_at_modal, 3),
-        " U =", round(oc$Uhat_at_modal, 3), "\n")
-    cat("  Membership in A: satisfied in", round(100 * oc$prop_modal_table2_member, 1),
-        "% of replicates selecting this cell\n\n")
+        " U =", round(oc$Uhat_at_modal, 3), "  (averaged across every recommended cell in every replicate)\n")
+    cat("  Membership in A: satisfied for", round(100 * oc$prop_modal_table2_member, 1),
+        "% of recommended cells across all replicates\n\n")
   } else {
     cat("Recommended (j, k): no dose pair selected in any replicate (",
         round(100 * oc$prop_no_selection, 1), "% of trials had no admissible dose)\n\n")
@@ -288,22 +444,36 @@ report_design <- function(design_name, scenario_name, scenario, mc, oc, note) {
   
   cat("Pr(select T > deltaT) =", round(oc$Pr_select_unsafe, 3), "\n")
   cat("Pr(select E < deltaE) =", round(oc$Pr_select_ineffective, 3), "\n\n")
+  if (!is.na(oc$prop_replicates_with_tie) && oc$prop_replicates_with_tie > 0) {
+    cat("Replicates whose OWN final selection was itself a tie (>1 admissible cell shared the\n",
+        "  max posterior utility within that single trial -- ALL such cells were counted, no\n",
+        "  tie-break applied):", round(100 * oc$prop_replicates_with_tie, 1), "%\n\n", sep = "")
+  }
   cat("Mean true E at selection =", round(oc$mean_true_E_at_selection, 3), "\n")
   cat("Mean true T at selection =", round(oc$mean_true_T_at_selection, 3), "\n\n")
   cat("Mean |A| =", round(oc$mean_A_size, 2), "\n\n")
   cat("Sensitivity summary:", note, "\n\n")
   cat("Assumptions: cells are modelled independently via Beta-Binomial updates\n",
-      "(no explicit borrowing across the grid), time-to-event likelihoods are not\n",
-      "included, and utility is linear in (Ehat,That); demonstration truth surfaces\n",
-      "should be replaced by calibrated scenario matrices informed by biology,\n",
-      "PK/PD, or prior evidence, for substantive use.\n", sep = "")
+      "(no explicit borrowing across the grid; EffTox-TITE is the exception, using\n",
+      "a time-to-event weighted likelihood for continuous accrual -- see efftox.R),\n",
+      "and utility is linear in (Ehat,That); demonstration truth surfaces should be\n",
+      "replaced by calibrated scenario matrices informed by biology, PK/PD, or prior\n",
+      "evidence, for substantive use. Ties are handled with two different policies:\n",
+      "the TRUE OBDC and each design's own FINAL recommended OBDC are REPORTED\n",
+      "CONCLUSIONS, not operational necessities, so they are NEVER tie-broken --\n",
+      "every admissible cell sharing the max utility is reported. The 'modal cell\n",
+      "across replicates' shown above is a different thing (a display summary of\n",
+      "selection frequency over many simulated trials), and it IS tie-broken (lowest\n",
+      "total standardized dose j+k) purely so the report has one cell to highlight;\n",
+      "how often that display tie happened, and how often a single trial's own final\n",
+      "selection was itself untied, are both reported above.\n", sep = "")
 }
 
 ## =============================================================================
 ## run_obdc_comparison() -- the function to use once you SOURCE this file
 ## =============================================================================
 ## Sourcing this file (source("execution.R")) does NOT automatically run the
-## full multi-scenario report -- it just loads the scenarios, the four design
+## full multi-scenario report -- it just loads the scenarios, the design
 ## engines, and this function, so you can call it yourself with whichever
 ## scenario and arguments you want. (Running `Rscript execution.R` from a
 ## terminal still gives you the full default report, as before -- see the
@@ -317,9 +487,9 @@ report_design <- function(design_name, scenario_name, scenario, mc, oc, note) {
 ## ...: any of the Table 2 arguments (deltaE, deltaT, piE, piT, wE, wT, aE,
 ##   bE, aT, bT, n, Nsim) -- edit only the ones you want to change from the
 ##   defaults at the top of this file.
-## Returns the four designs' operating-characteristics results (invisibly),
+## Returns all five designs' operating-characteristics results (invisibly),
 ## and -- unless verbose = FALSE -- prints the same report as execution.R's
-## default run, for all four designs on the one scenario you chose.
+## default run, for all five designs on the one scenario you chose.
 run_obdc_comparison <- function(scenario,
                                 deltaE = DELTA_E, deltaT = DELTA_T,
                                 piE = PI_E, piT = PI_T,
@@ -353,6 +523,8 @@ run_obdc_comparison <- function(scenario,
              n = n, Nsim = Nsim, J = sc$J, K = sc$K)
   seeds <- seq_len(mc$Nsim)
   
+  if (verbose) report_true_obdc(scenario_label, sc, mc)
+  
   results <- list()
   for (design_name in names(RUNNERS)) {
     if (verbose) cat("Running", design_name, "on", scenario_label, "...\n")
@@ -368,7 +540,7 @@ run_obdc_comparison <- function(scenario,
 ## SIMPLE EXAMPLE -- safe to copy/paste into your R console after sourcing
 ## this file (source("execution.R")):
 ##
-##   # All 4 designs on the paper's "Scenario 1", using the default Table-2
+##   # All 5 designs on the paper's "Scenario 1", using the default Table-2
 ##   # arguments. J and K are NOT typed in by hand -- they come straight from
 ##   # the scenario:
 ##   results <- run_obdc_comparison("Scenario 1")
@@ -420,6 +592,7 @@ if (!interactive()) {
     cat("\n\n=========================================================\n")
     cat("SCENARIO:", scn_name, " (source:", scenario$source, ")\n")
     cat("=========================================================\n")
+    report_true_obdc(scn_name, scenario, mc)
     
     for (design_name in names(RUNNERS)) {
       cat("Running", design_name, "on", scn_name, "...\n")
