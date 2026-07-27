@@ -1,26 +1,11 @@
 # OBDC-Comparison
 
 This repository contains the simulation code used to conduct the analyses
-for a review of Bayesian designs for identifying the **optimal biological
-dose combination (OBDC)** — the dose pair achieving sufficient biological
-activity with acceptable tolerability — in two-agent Phase I/II oncology
-trials, in line with the FDA's Project Optimus initiative. It provides
-working R implementations of four representative designs spanning the three
-principal statistical paradigms for OBDC estimation: a model-based design
-(**EffTox**), a model-assisted design (**Comb-BOIN12**), and two
-utility-integrated designs (**COMIC** and **uTPI-Comb**). Each design is
-built from a common set of configurable parameters and can be run either as a
-command-line report or through an interactive Shiny application, allowing
-users to explore scenario assumptions and compare operating characteristics
-across designs without needing to read the underlying statistical code.
-
-Seven self-contained files make up the bundle: the scenarios, the four design
-engines, one "just-run-it" script, and one single-file Shiny app.
-
-## Citation
-
-This repository provides the simulation code developed for and used in the
-following manuscript. If you use this repository, please cite:
+for the following manuscript on Bayesian designs for identifying the
+**optimal biological dose combination (OBDC)** — the dose pair achieving
+sufficient biological activity with acceptable tolerability — in two-agent
+Phase I/II oncology trials, in line with the FDA's Project Optimus
+initiative. If you use this repository, please cite:
 
 > Mukherjee A¹, Takeda K², Wason J M S¹. *Optimal Dose Combination Selection
 > in Oncology Trials Using Bayesian Designs: Statistical, Regulatory, and
@@ -31,6 +16,18 @@ following manuscript. If you use this repository, please cite:
 > Global Development Inc., Northbrook, USA.
 >
 > Corresponding author: Ayon Mukherjee ([ayon.mukherjee@newcastle.ac.uk](mailto:ayon.mukherjee@newcastle.ac.uk)).
+
+It provides working R implementations of four representative designs spanning
+the three principal statistical paradigms for OBDC estimation: a model-based
+design (**EffTox**), a model-assisted design (**Comb-BOIN12**), and two
+utility-integrated designs (**COMIC** and **uTPI-Comb**). Each design is
+built from a common set of configurable parameters and can be run either as a
+command-line report or through an interactive Shiny application, allowing
+users to explore scenario assumptions and compare operating characteristics
+across designs without needing to read the underlying statistical code.
+
+This reporsitory contains Six self-contained .R files (the scenarios, the four design
+engines, one "just-run-it" script and an R Shiny app makes up the bundle.
 
 
 ## Try the interactive app online
