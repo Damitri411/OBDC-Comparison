@@ -34,10 +34,13 @@ without running the full report, and gives you `run_obdc_comparison()` to
 call yourself, e.g.:
 ```r
 source("execution.R")
-results <- run_obdc_comparison("Scenario 1", deltaE = 0.25, wT = 1.5, Nsim = 20)
+results <- run_obdc_comparison("Scenario 1", deltaE = 0.25, wT = 1.5, Nsim = 100)
 ```
 See the "SIMPLE EXAMPLE" comment block in execution.R for more.
 
 #ted trial software — see the
    closing notes in its output for the fuller list of simplifications made
    in each engine.
+## Caution 
+In the R shiny App (https://22c7ba-damitri-kundu.shinyapps.io/OBDC-Compare-App/), Nsim higher than 500 can cause delays in execution.
+
