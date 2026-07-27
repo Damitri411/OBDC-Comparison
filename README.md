@@ -1,7 +1,20 @@
-# OBDC Designs -- 7-file bundle
+# OBDC-Comparison
 
-Seven self-contained files: the scenarios, the four design engines, one
-"just-run-it" script, and one single-file Shiny app.
+This repository accompanies a review of Bayesian designs for identifying the
+**optimal biological dose combination (OBDC)** — the dose pair achieving
+sufficient biological activity with acceptable tolerability — in two-agent
+Phase I/II oncology trials, in line with the FDA's Project Optimus initiative.
+It provides working R implementations of four representative designs spanning
+the three principal statistical paradigms for OBDC estimation: a model-based
+design (**EffTox**), a model-assisted design (**Comb-BOIN12**), and two
+utility-integrated designs (**COMIC** and **uTPI-Comb**). Each design is
+built from a common set of configurable parameters and can be run either as a
+command-line report or through an interactive Shiny application, allowing
+users to explore scenario assumptions and compare operating characteristics
+across designs without needing to read the underlying statistical code.
+
+Seven self-contained files make up the bundle: the scenarios, the four design
+engines, one "just-run-it" script, and one single-file Shiny app.
 
 ## Try the interactive app online
 
@@ -58,3 +71,9 @@ See the "SIMPLE EXAMPLE" comment block in execution.R for more.
 ## Caution 
 In the R shiny App (https://22c7ba-damitri-kundu.shinyapps.io/OBDC-Compare-App/), Nsim higher than 500 can cause delays in execution.
 
+References
+Liang H, Yang Y N, Yuan M. uTPI-Comb: an optimal Bayesian dose-allocation method in two-agent phase I/II clinical trials. JUSTC, 2024, 54(12): 1206. DOI: 10.52396/JUSTC-2024-0104.
+Lu M, Zhang J, Yuan Y, Lin R. Comb-BOIN12: A Utility-Based Bayesian Optimal Interval Design for Dose Optimization in Cancer Drug-Combination Trials. Statistics in Biopharmaceutical Research, 2025, 17(2): 266-276.
+Thall P F, Cook J D. Dose-finding based on efficacy-toxicity trade-offs. Biometrics, 2004, 60(3): 684-693.
+Chen K, Takeda K, Yuan Y. COMIC: A Bayesian dose optimization design for drug combination in multiple indications with application to CAR-T therapies. Statistics in Medicine, 2025, 44(10-12): e70107.
+Mukherjee A¹, Takeda K², Wason J M S¹. Optimal Dose Combination Selection in Oncology Trials Using Bayesian Designs: Statistical, Regulatory, and Operational Insights (manuscript in preparation). ¹Population Health Sciences Institute, Newcastle University, Newcastle upon Tyne, UK. ²Quantitative Science and Evidence Generation, Astellas Pharma Global Development Inc., Northbrook, USA. Corresponding author: Ayon Mukherjee (ayon.mukherjee@newcastle.ac.uk).
