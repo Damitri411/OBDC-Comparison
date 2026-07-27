@@ -101,6 +101,37 @@ admissible_set <- function(post, cfg, tried) {
   A
 }
 
+## Multiple cells CAN legitimately tie on the ranking value. Two different
+## situations use two different policies:
+##  - INTERIM dose-transition steps (deciding where to send the NEXT cohort)
+##    MUST resolve to exactly one dose -- a trial can only treat patients at
+##    one place at a time -- so those still use select_best_with_tiebreak()
+##    below (lowest total standardized dose j+k as the tie-break).
+##  - The FINAL recommended OBDC is a REPORTED CONCLUSION, not an operational
+##    necessity, so it is NOT tie-broken: select_all_tied() returns every
+##    admissible cell achieving the max value, and all of them are reported
+##    as (jointly) recommended.
+select_best_with_tiebreak <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  n_tied <- length(tied)
+  if (n_tied > 1) {
+    dose_sum <- idx[tied, 1] + idx[tied, 2]
+    tied <- tied[which.min(dose_sum)]
+  }
+  list(sel = as.numeric(idx[tied, ]), n_tied = n_tied)
+}
+
+## Returns EVERY row of `idx` achieving max(values), as a 2-column matrix
+## with columns named "j","k" -- no tie-break applied.
+select_all_tied <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  out <- matrix(idx[tied, ], ncol = 2)
+  colnames(out) <- c("j", "k")
+  out
+}
+
 ## -----------------------------------------------------------------------------
 ## 4. Local BOIN toxicity movement + utility ranking among neighbours
 ## -----------------------------------------------------------------------------
@@ -145,8 +176,9 @@ next_dose_comb_boin12 <- function(current, state, cfg) {
   util_ok <- util[is_adm]
 
   if (nrow(cand_ok) == 0) { cand_ok <- matrix(c(j, k), nrow = 1); util_ok <- post$U_hat[j, k] }
-  best <- cand_ok[which.max(util_ok), ]
-  list(next_dose = as.numeric(best), move = move, post = post, admissible = A)
+  pick <- select_best_with_tiebreak(cand_ok, util_ok)
+  best <- pick$sel
+  list(next_dose = best, move = move, post = post, admissible = A)
 }
 
 ## -----------------------------------------------------------------------------
@@ -193,14 +225,13 @@ simulate_comb_boin12 <- function(cfg, true_pE, true_pT, seed = NULL) {
   if (any(A_final)) {
     idx <- which(A_final, arr.ind = TRUE)
     Uvals <- final_post$U_hat[A_final]
-    sel <- idx[which.max(Uvals), ]
-    names(sel) <- c("j", "k")
+    sel <- select_all_tied(idx, Uvals)   # ALL admissible cells tied on max U -- no tie-break
   } else {
-    sel <- c(j = NA, k = NA)
+    sel <- matrix(c(NA_real_, NA_real_), nrow = 1, dimnames = list(NULL, c("j", "k")))
   }
 
   list(state = state, posterior = final_post, admissible = A_final,
-       recommended_OBDC = sel, path = path, n_total = total_n)
+       recommended_OBDC = sel, n_tied_OBDC = nrow(sel), path = path, n_total = total_n)
 }
 
 ## -----------------------------------------------------------------------------
@@ -222,7 +253,14 @@ if (identical(environment(), globalenv())) {
                        0.32, 0.46, 0.55, 0.55), nrow = 4, byrow = TRUE)
 
   res <- simulate_comb_boin12(cfg, true_pE, true_pT, seed = 2026)
-  cat("Recommended OBDC (Agent A level, Agent B level):", res$recommended_OBDC, "\n")
+  if (anyNA(res$recommended_OBDC)) {
+    cat("Recommended OBDC: none -- no admissible dose pair.\n")
+  } else if (nrow(res$recommended_OBDC) == 1) {
+    cat("Recommended OBDC (Agent A level, Agent B level):", res$recommended_OBDC[1, ], "\n")
+  } else {
+    cat("Recommended OBDC:", nrow(res$recommended_OBDC), "cells tied on utility (all reported, no tie-break):\n")
+    print(res$recommended_OBDC)
+  }
   cat("Total patients used:", res$n_total, "\n")
   print(round(res$posterior$U_hat, 3))
 }

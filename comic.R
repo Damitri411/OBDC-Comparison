@@ -112,6 +112,37 @@ comic_admissible_set <- function(post, cfg) {
   (post$PrTox1_high <= cfg$Cs1) & (post$PrTox2_high <= cfg$Cs2) & (post$PrUtil_low <= cfg$Ce)
 }
 
+## Multiple cells CAN legitimately tie on the ranking value. Two different
+## situations use two different policies:
+##  - INTERIM dose-transition steps (deciding where to send the NEXT cohort)
+##    MUST resolve to exactly one dose -- a trial can only treat patients at
+##    one place at a time -- so those still use select_best_with_tiebreak()
+##    below (lowest total standardized dose j+k as the tie-break).
+##  - The FINAL recommended OBDC is a REPORTED CONCLUSION, not an operational
+##    necessity, so it is NOT tie-broken: select_all_tied() returns every
+##    admissible cell achieving the max value, and all of them are reported
+##    as (jointly) recommended.
+select_best_with_tiebreak <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  n_tied <- length(tied)
+  if (n_tied > 1) {
+    dose_sum <- idx[tied, 1] + idx[tied, 2]
+    tied <- tied[which.min(dose_sum)]
+  }
+  list(sel = as.numeric(idx[tied, ]), n_tied = n_tied)
+}
+
+## Returns EVERY row of `idx` achieving max(values), as a 2-column matrix
+## with columns named "j","k" -- no tie-break applied.
+select_all_tied <- function(idx, values) {
+  best_val <- max(values)
+  tied <- which(values == best_val)
+  out <- matrix(idx[tied, ], ncol = 2)
+  colnames(out) <- c("j", "k")
+  out
+}
+
 ## -----------------------------------------------------------------------------
 ## 4. PD-guided axis-wise escalation
 ##    Once Pr(PD saturated | data) crosses pd_cutoff on one agent's axis, that
@@ -142,8 +173,9 @@ comic_next_dose <- function(current, state, cfg) {
   if (nrow(cand_ok) == 0) { cand_ok <- matrix(c(j, k), nrow = 1) }
 
   util <- apply(cand_ok, 1, function(z) post$mu_hat[z[1], z[2]])
-  best <- cand_ok[which.max(util), ]
-  list(next_dose = as.numeric(best), post = post, admissible = A)
+  pick <- select_best_with_tiebreak(cand_ok, util)
+  best <- pick$sel
+  list(next_dose = best, post = post, admissible = A)
 }
 
 ## -----------------------------------------------------------------------------
@@ -185,10 +217,13 @@ comic_run_indication <- function(cfg, true_cat_probs, true_dlt1, true_dlt2, true
   A <- comic_admissible_set(post, cfg)
   if (any(A)) {
     idx <- which(A, arr.ind = TRUE)
-    sel <- idx[which.max(post$mu_hat[A]), ]; names(sel) <- c("j", "k")
-  } else sel <- c(j = NA, k = NA)
+    sel <- select_all_tied(idx, post$mu_hat[A])   # ALL admissible cells tied on max utility -- no tie-break
+  } else {
+    sel <- matrix(c(NA_real_, NA_real_), nrow = 1, dimnames = list(NULL, c("j", "k")))
+  }
 
-  list(state = state, posterior = post, admissible = A, recommended_OBDC = sel, path = path)
+  list(state = state, posterior = post, admissible = A, recommended_OBDC = sel,
+       n_tied_OBDC = nrow(sel), path = path)
 }
 
 ## -----------------------------------------------------------------------------
@@ -222,15 +257,39 @@ if (identical(environment(), globalenv())) {
   cat("=== Stage I: indication 1 ===\n")
   res1 <- comic_run_indication(cfg, true_cats, true_dlt1, true_dlt2, true_pd_sat,
                                 n_max = cfg$n_max_stage1, start_dose = cfg$start_dose, seed = 11)
-  cat("Stage-I provisional OBDC:", res1$recommended_OBDC, "\n")
+  if (anyNA(res1$recommended_OBDC)) {
+    cat("Stage-I provisional OBDC: none -- no admissible dose pair.\n")
+  } else if (nrow(res1$recommended_OBDC) == 1) {
+    cat("Stage-I provisional OBDC:", res1$recommended_OBDC[1, ], "\n")
+  } else {
+    cat("Stage-I provisional OBDC:", nrow(res1$recommended_OBDC), "cells tied on utility (all reported, no tie-break):\n")
+    print(res1$recommended_OBDC)
+  }
   print(round(res1$posterior$mu_hat, 1))
 
   cat("\n=== Stage II: indication 2 (borrows Stage-I posterior, starts at provisional OBDC) ===\n")
   prior_borrow <- cfg$dirichlet_prior + apply(res1$state$counts, 3, sum) / cfg$J / cfg$K  # down-weighted borrowing
-  start2 <- if (!any(is.na(res1$recommended_OBDC))) res1$recommended_OBDC else cfg$start_dose
+  ## Stage II needs exactly ONE starting dose (operational necessity), so if
+  ## Stage I ended in a tie, break it here (lowest total dose) purely to pick
+  ## where Stage II begins -- this does NOT affect how Stage I's own result
+  ## was reported above (all tied cells were shown, untouched).
+  start2 <- if (anyNA(res1$recommended_OBDC)) {
+    cfg$start_dose
+  } else if (nrow(res1$recommended_OBDC) == 1) {
+    as.numeric(res1$recommended_OBDC[1, ])
+  } else {
+    select_best_with_tiebreak(res1$recommended_OBDC, rep(1, nrow(res1$recommended_OBDC)))$sel
+  }
   res2 <- comic_run_indication(cfg, true_cats, true_dlt1, true_dlt2, true_pd_sat,
                                 n_max = cfg$n_max_stage2, start_dose = start2,
                                 prior_override = prior_borrow, seed = 22)
-  cat("Stage-II (indication 2) OBDC:", res2$recommended_OBDC, "\n")
+  if (anyNA(res2$recommended_OBDC)) {
+    cat("Stage-II (indication 2) OBDC: none -- no admissible dose pair.\n")
+  } else if (nrow(res2$recommended_OBDC) == 1) {
+    cat("Stage-II (indication 2) OBDC:", res2$recommended_OBDC[1, ], "\n")
+  } else {
+    cat("Stage-II (indication 2) OBDC:", nrow(res2$recommended_OBDC), "cells tied on utility (all reported, no tie-break):\n")
+    print(res2$recommended_OBDC)
+  }
   print(round(res2$posterior$mu_hat, 1))
 }
