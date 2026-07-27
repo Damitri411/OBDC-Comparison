@@ -34,6 +34,7 @@ engines, one "just-run-it" script and an R Shiny app makes up the bundle.
 
 OBDC Compare App:
 https://22c7ba-damitri-kundu.shinyapps.io/OBDC-Compare-App/
+![Version](https://img.shields.io/badge/version-1.0-blue)
 
 | File | What it is |
 |------|------------|
